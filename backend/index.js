@@ -35,6 +35,10 @@ app.use('/api/projects', projectsRouter);
 app.use('/api/research', researchRouter);
 
 // Basic route
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'DeepResearch Backend API is active!' });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'API is running' });
 });
