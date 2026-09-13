@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import api, { API_BASE_URL } from '../services/api';
 import { 
   Sparkles, Search, GraduationCap, Globe, BookOpen, 
   Layers, CheckCircle2, AlertCircle, RefreshCw, 
@@ -49,9 +50,13 @@ export default function Dashboard() {
         try {
           let res;
           try {
-            res = await axios.get(`/api/research/${runId}`);
-          } catch {
-            res = await axios.get(`http://localhost:5000/api/research/${runId}`);
+            res = await api.get(`/api/research/${runId}`);
+          } catch (pollErr) {
+            if (!API_BASE_URL && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+              res = await axios.get(`http://localhost:5000/api/research/${runId}`);
+            } else {
+              throw pollErr;
+            }
           }
           
           const data = res.data;
@@ -87,9 +92,13 @@ export default function Dashboard() {
     try {
       let res;
       try {
-        res = await axios.get(`/api/research/${id}/sources`);
-      } catch {
-        res = await axios.get(`http://localhost:5000/api/research/${id}/sources`);
+        res = await api.get(`/api/research/${id}/sources`);
+      } catch (fetchErr) {
+        if (!API_BASE_URL && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+          res = await axios.get(`http://localhost:5000/api/research/${id}/sources`);
+        } else {
+          throw fetchErr;
+        }
       }
       if (Array.isArray(res.data)) {
         setSources(res.data);
@@ -115,17 +124,28 @@ export default function Dashboard() {
     try {
       let res;
       try {
-        res = await axios.post('/api/research', { query: q });
+        res = await api.post('/api/research', { query: q });
       } catch (proxyErr) {
-        console.warn('Vite proxy failed, trying direct localhost:5000:', proxyErr.message);
-        res = await axios.post('http://localhost:5000/api/research', { query: q });
+        if (!API_BASE_URL && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+          console.warn('Vite proxy failed, trying direct localhost:5000:', proxyErr.message);
+          res = await axios.post('http://localhost:5000/api/research', { query: q });
+        } else {
+          throw proxyErr;
+        }
       }
       setRunId(res.data.run._id);
       setStatus('pending');
       setProgress(8);
     } catch (err) {
       console.error('Failed to start research:', err);
-      setErrorMsg('Could not connect to backend server. Make sure port 5000 is active.');
+      const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (isLocal) {
+        setErrorMsg('Could not connect to backend server. Make sure your backend is running on port 5000 (npm start inside backend directory).');
+      } else {
+        setErrorMsg(
+          'Could not connect to backend server. If you deployed to Vercel, please deploy the backend (e.g. on Render or Railway) and set VITE_API_URL in your Vercel Project Settings.'
+        );
+      }
     } finally {
       setLoading(false);
     }
