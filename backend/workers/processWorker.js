@@ -7,14 +7,17 @@ const Chunk = require('../models/Chunk');
 const llmService = require('../services/llmService');
 const { addResearchJob, registerHandler } = require('./queue');
 
-function chunkText(text, chunkSize = 600, overlap = 100) {
+function chunkText(text, chunkSize = 600, maxChunks = 4) {
   const chunks = [];
   let start = 0;
-  while (start < text.length) {
+  while (start < text.length && chunks.length < maxChunks) {
     const end = Math.min(start + chunkSize, text.length);
-    chunks.push(text.slice(start, end));
+    const chunk = text.slice(start, end).trim();
+    if (chunk.length > 50) {
+      chunks.push(chunk);
+    }
     if (end === text.length) break;
-    start += chunkSize - overlap;
+    start += chunkSize - 100;
   }
   return chunks;
 }
@@ -25,13 +28,13 @@ async function scrapeUrl(source) {
 
   try {
     const response = await axios.get(url, {
-      timeout: 5000,
+      timeout: 2500,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       },
-      maxRedirects: 4,
-      maxContentLength: 5 * 1024 * 1024,
+      maxRedirects: 3,
+      maxContentLength: 3 * 1024 * 1024,
     });
 
     const $ = cheerio.load(response.data);
@@ -44,8 +47,8 @@ async function scrapeUrl(source) {
       if (t.length > text.length) text = t;
     }
 
-    if (text.length >= 150) {
-      return academicHeader + text.slice(0, 35000);
+    if (text.length >= 120) {
+      return academicHeader + text.slice(0, 5000);
     }
   } catch (err) {
     // Graceful fallback to rich metadata snippet
@@ -61,7 +64,7 @@ async function scrapeUrl(source) {
 async function processSingleSource(source, researchRunId) {
   try {
     const text = await scrapeUrl(source);
-    if (!text || text.length < 40) throw new Error('Insufficient extracted text content');
+    if (!text || text.length < 30) throw new Error('Insufficient extracted text content');
 
     const hash = crypto.createHash('sha256').update(text).digest('hex');
     const existing = await Source.findOne({ contentHash: hash, researchRunId });
@@ -76,23 +79,22 @@ async function processSingleSource(source, researchRunId) {
     source.status = 'extracted';
     await source.save();
 
-    const chunks = chunkText(text, 600, 100);
+    const chunks = chunkText(text, 600, 4);
 
-    for (let i = 0; i < chunks.length; i++) {
-      try {
-        const vector = await llmService.generateEmbeddings(chunks[i]);
-        const chunkDoc = new Chunk({
-          sourceId: source._id,
-          researchRunId,
-          chunkIndex: i,
-          text: chunks[i],
-          vector,
-          charCount: chunks[i].length,
-        });
-        await chunkDoc.save();
-      } catch (embErr) {
-        console.error(`[ProcessWorker] Embedding failed for chunk ${i}:`, embErr.message);
-      }
+    const chunkDocs = await Promise.all(chunks.map(async (chunkStr, i) => {
+      const vector = await llmService.generateEmbeddings(chunkStr);
+      return new Chunk({
+        sourceId: source._id,
+        researchRunId,
+        chunkIndex: i,
+        text: chunkStr,
+        vector,
+        charCount: chunkStr.length,
+      });
+    }));
+
+    if (chunkDocs.length > 0) {
+      await Chunk.insertMany(chunkDocs);
     }
 
     source.status = 'chunked';

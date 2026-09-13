@@ -8,7 +8,11 @@ import axios from 'axios';
 const getBaseUrl = () => {
   const envUrl = import.meta.env.VITE_API_URL;
   if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
-    return envUrl.trim().replace(/\/+$/, '');
+    let cleanUrl = envUrl.trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(cleanUrl)) {
+      cleanUrl = `https://${cleanUrl}`;
+    }
+    return cleanUrl;
   }
   return '';
 };

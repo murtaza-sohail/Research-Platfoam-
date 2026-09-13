@@ -71,10 +71,24 @@ export default function Dashboard() {
             setStats(data.stats);
           }
           
-          if (data.status === 'completed' && data.report) {
-            setReport(data.report);
-            // Fetch all enriched sources
-            fetchSources(runId);
+          if (data.status === 'completed') {
+            if (data.report) {
+              setReport(data.report);
+              fetchSources(runId);
+            } else {
+              // Retry fetching report if not yet serialized
+              setTimeout(async () => {
+                try {
+                  const retryRes = await api.get(`/api/research/${runId}`);
+                  if (retryRes.data?.report) {
+                    setReport(retryRes.data.report);
+                    fetchSources(runId);
+                  }
+                } catch (rErr) {}
+              }, 1000);
+            }
+          } else if (data.status === 'failed') {
+            setErrorMsg(data.error || 'The autonomous research pipeline encountered an error during synthesis.');
           }
         } catch (err) {
           console.error('Error polling research status:', err);
@@ -139,11 +153,21 @@ export default function Dashboard() {
     } catch (err) {
       console.error('Failed to start research:', err);
       const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      if (isLocal) {
-        setErrorMsg('Could not connect to backend server. Make sure your backend is running on port 5000 (npm start inside backend directory).');
+      const serverError = err.response?.data?.error || err.response?.data?.message;
+      
+      if (serverError) {
+        setErrorMsg(`Backend Error: ${serverError}`);
+      } else if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setErrorMsg('Backend timed out. If your Render backend was asleep, it may take ~45 seconds to wake up on the free tier. Please click Start again in a few moments.');
+      } else if (isLocal) {
+        setErrorMsg('Could not connect to local backend. Make sure your backend server is running on port 5000 (run `npm start` in backend).');
+      } else if (!API_BASE_URL) {
+        setErrorMsg(
+          'Missing VITE_API_URL: Vercel frontend is not connected to your Render backend. Please set VITE_API_URL in Vercel Settings -> Environment Variables, then Redeploy.'
+        );
       } else {
         setErrorMsg(
-          'Could not connect to backend server. If you deployed to Vercel, please deploy the backend (e.g. on Render or Railway) and set VITE_API_URL in your Vercel Project Settings.'
+          `Could not reach backend at ${API_BASE_URL}. Please ensure your Render backend is active and healthy (${err.message || 'Network Error'}).`
         );
       }
     } finally {

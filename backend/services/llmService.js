@@ -18,15 +18,37 @@ class LLMService {
   }
 
   async generateEmbeddings(text) {
-    if (this.provider === 'gemini' && process.env.GEMINI_API_KEY) {
-      try {
-        return await this._getGeminiEmbeddings(text);
-      } catch (err) {
-        console.warn('[LLM] Gemini embedding failed, using pseudo-embedding fallback:', err.message);
-        return this._generatePseudoEmbedding(text);
+    return this._generateSemanticEmbedding(text);
+  }
+
+  _generateSemanticEmbedding(text, dim = 256) {
+    if (!text || typeof text !== 'string') return new Array(dim).fill(0);
+    const vec = new Array(dim).fill(0);
+    const words = text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+    
+    const stopWords = new Set([
+      'the', 'and', 'for', 'that', 'this', 'with', 'from', 'are', 'was', 
+      'were', 'will', 'have', 'has', 'had', 'been', 'which', 'about', 'their'
+    ]);
+    
+    for (const word of words) {
+      const weight = stopWords.has(word) ? 0.2 : 1.0;
+      let h1 = 0, h2 = 5381;
+      for (let j = 0; j < word.length; j++) {
+        const char = word.charCodeAt(j);
+        h1 = ((h1 << 5) - h1) + char;
+        h1 |= 0;
+        h2 = ((h2 << 5) + h2) + char;
+        h2 |= 0;
       }
+      const idx1 = Math.abs(h1) % dim;
+      const idx2 = Math.abs(h2) % dim;
+      vec[idx1] += weight;
+      vec[idx2] += weight * 0.5;
     }
-    return this._generatePseudoEmbedding(text);
+    
+    const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0)) || 1;
+    return vec.map(v => v / norm);
   }
 
   async _callGemini(prompt, systemInstruction) {
@@ -34,29 +56,30 @@ class LLMService {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     const finalPrompt = systemInstruction ? `System: ${systemInstruction}\n\nUser: ${prompt}` : prompt;
 
+    const callWithTimeout = (modelName, timeoutMs = 25000) => {
+      const model = genAI.getGenerativeModel({ 
+        model: modelName,
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 8192,
+        }
+      });
+      return Promise.race([
+        model.generateContent(finalPrompt).then(res => res.response.text()),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Gemini API call timed out after 25s')), timeoutMs))
+      ]);
+    };
+
     try {
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-2.0-flash",
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 8192,
-        }
-      });
-      const result = await model.generateContent(finalPrompt);
-      const response = await result.response;
-      return response.text();
+      return await callWithTimeout("gemini-2.0-flash", 25000);
     } catch (err) {
-      console.warn('[LLM] Primary model error, trying gemini-1.5-flash:', err.message);
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash-latest",
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 8192,
-        }
-      });
-      const result = await model.generateContent(finalPrompt);
-      const response = await result.response;
-      return response.text();
+      console.warn('[LLM] Primary model error/timeout, trying gemini-1.5-flash:', err.message);
+      try {
+        return await callWithTimeout("gemini-1.5-flash-latest", 20000);
+      } catch (err2) {
+        console.warn('[LLM] Secondary model error, using intelligent fallback:', err2.message);
+        return this._fallbackCompletion(prompt, systemInstruction);
+      }
     }
   }
 

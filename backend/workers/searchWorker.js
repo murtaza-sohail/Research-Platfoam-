@@ -15,61 +15,59 @@ async function handleExecuteSearch(job) {
     let scholarSaved = 0;
     let webSaved = 0;
 
-    console.log(`[SearchWorker] Executing academic & universal web search across ${subQuestions.length} tracks...`);
+    console.log(`[SearchWorker] Executing academic & universal web search across ${subQuestions.length} tracks concurrently...`);
 
-    for (let i = 0; i < subQuestions.length; i++) {
-      const sq = subQuestions[i];
+    const trackResults = await Promise.all(subQuestions.map(async (sq, i) => {
       console.log(`[SearchWorker] [${i + 1}/${subQuestions.length}] Searching: "${sq}"`);
-
-      // Query Academic (Google Scholar/arXiv/OpenAlex) & Universal Web in parallel
       const [academicResults, webResults] = await Promise.all([
-        academicSearchService.searchAcademic(sq, 4).catch(() => []),
-        universalSearchService.searchWeb(sq, 4).catch(() => [])
+        academicSearchService.searchAcademic(sq, 3).catch(() => []),
+        universalSearchService.searchWeb(sq, 3).catch(() => [])
       ]);
+      return [...academicResults, ...webResults];
+    }));
 
-      const combinedResults = [...academicResults, ...webResults];
+    const combinedResults = trackResults.flat();
+    const sourceDocs = [];
 
-      for (const result of combinedResults) {
-        if (!result.url) continue;
+    for (const result of combinedResults) {
+      if (!result.url) continue;
 
-        const normalizedUrl = result.url.trim().toLowerCase();
-        if (seenUrls.has(normalizedUrl)) continue;
-        seenUrls.add(normalizedUrl);
+      const normalizedUrl = result.url.trim().toLowerCase();
+      if (seenUrls.has(normalizedUrl)) continue;
+      seenUrls.add(normalizedUrl);
 
-        try {
-          const parsed = new URL(result.url);
-          if (['localhost', '127.0.0.1', '0.0.0.0'].includes(parsed.hostname)) continue;
-          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
-        } catch { 
-          continue; 
-        }
-
-        const source = new Source({
-          researchRunId,
-          url: result.url,
-          title: result.title || result.url,
-          domain: result.domain || (new URL(result.url).hostname),
-          snippet: result.snippet || '',
-          authors: result.authors || result.author || '',
-          year: result.year || null,
-          citationCount: result.citationCount || 0,
-          pdfUrl: result.pdfUrl || null,
-          sourceType: result.sourceType || 'webpage',
-          status: 'pending'
-        });
-
-        await source.save();
-        totalSaved++;
-
-        if (['scholar', 'arxiv', 'academic'].includes(result.sourceType)) {
-          scholarSaved++;
-        } else {
-          webSaved++;
-        }
+      try {
+        const parsed = new URL(result.url);
+        if (['localhost', '127.0.0.1', '0.0.0.0'].includes(parsed.hostname)) continue;
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+      } catch { 
+        continue; 
       }
 
-      const progressPercent = 28 + Math.round(((i + 1) / subQuestions.length) * 15);
-      await ResearchRun.findByIdAndUpdate(researchRunId, { progress: progressPercent });
+      sourceDocs.push(new Source({
+        researchRunId,
+        url: result.url,
+        title: result.title || result.url,
+        domain: result.domain || (new URL(result.url).hostname),
+        snippet: result.snippet || '',
+        authors: result.authors || result.author || '',
+        year: result.year || null,
+        citationCount: result.citationCount || 0,
+        pdfUrl: result.pdfUrl || null,
+        sourceType: result.sourceType || 'webpage',
+        status: 'pending'
+      }));
+
+      totalSaved++;
+      if (['scholar', 'arxiv', 'academic'].includes(result.sourceType)) {
+        scholarSaved++;
+      } else {
+        webSaved++;
+      }
+    }
+
+    if (sourceDocs.length > 0) {
+      await Source.insertMany(sourceDocs);
     }
 
     console.log(`[SearchWorker] Search complete. Total sources harvested: ${totalSaved} (${scholarSaved} Scholar/Academic, ${webSaved} Web)`);
